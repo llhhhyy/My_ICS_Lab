@@ -1,0 +1,175 @@
+#/* $begin ncopy-ys */
+##################################################################
+# ncopy.ys - Copy a src block of len words to dst.
+# Return the number of positive words (>0) contained in src.
+#
+# Include your name and ID here.
+# name: 刘浩宇
+# ID：523031910521
+# Describe how and why you modified the baseline code.
+# 1. 使用 8 路循环展开，一次性将 8 个数读入到寄存器中，使用不同的寄存器保证流水线满速运行，由于使用了不同的寄存器，所以不存在任何的数据冒险，也就不需要暂停，从而可以优化 CPE。
+# 2. 8 路循环展开的第二个优点是余数处理的时候可以平衡地使用二叉树搜索，从而只需要 log2(8) = 3 次平均判断次数。
+# 3. 循环体中，用了技巧在 andq 和 jle 之间插入了一条 rmmovq 指令，使得当设置条件码的指令到达 Memory 访存阶段时，jle 刚刚进入 Decode 解码阶段，从而可以立即使用正确的 M_Cnd，避免控制冒险，即在 Decode 解码阶段就可以知道是否需要跳转，避免了预测失败时的 2 个气泡周期的惩罚。
+# 4. 余数处理部分交替使用了 3 中提到的技术与“戳气泡”技术来优化，避免加载/使用冒险，即在 mrmovq 和 andq 设置条件码之间插入一条指令（je）使得当 mrmovq 处于访存 Memory 阶段时，具体余数处理部分的 andq 进入译码 Decode 阶段，此时即可以使用转发技术来避免加载/使用冒险，从而避免暂停/气泡，优化 CPE。
+# 5. 使用了一些其他的细节技术，如基于 f_pc 的转发优先级的寄存器覆写、对于余数为 0 的情况特殊剪枝等，进一步优化了 CPE。
+##################################################################
+# Do not modify this portion
+# Function prologue.
+# %rdi = src, %rsi = dst, %rdx = len
+ncopy:
+
+##################################################################
+# You can modify this portion
+            iaddq $-8, %rdx
+            jl remainder
+        loop_8_way:
+            mrmovq (%rdi), %r8
+            mrmovq 8(%rdi), %r9
+            mrmovq 16(%rdi), %r10
+            mrmovq 24(%rdi), %r11
+            mrmovq 32(%rdi), %r12
+            mrmovq 40(%rdi), %r13
+            mrmovq 48(%rdi), %r14
+            mrmovq 56(%rdi), %rcx
+
+        num_0:
+            andq %r8, %r8
+            rmmovq %r8, (%rsi)
+            jle num_1
+            iaddq $1, %rax
+        num_1:
+            andq %r9, %r9
+            rmmovq %r9, 8(%rsi)
+            jle num_2
+            iaddq $1, %rax
+        num_2:
+            andq %r10, %r10
+            rmmovq %r10, 16(%rsi)
+            jle num_3
+            iaddq $1, %rax
+        num_3:
+            andq %r11, %r11
+            rmmovq %r11, 24(%rsi)
+            jle num_4
+            iaddq $1, %rax
+        num_4:
+            andq %r12, %r12
+            rmmovq %r12, 32(%rsi)
+            jle num_5
+            iaddq $1, %rax
+        num_5:
+            andq %r13, %r13
+            rmmovq %r13, 40(%rsi)
+            jle num_6
+            iaddq $1, %rax
+        num_6:
+            andq %r14, %r14
+            rmmovq %r14, 48(%rsi)
+            jle num_7
+            iaddq $1, %rax
+        num_7:
+            andq %rcx, %rcx
+            rmmovq %rcx, 56(%rsi)
+            jle update_expr
+            iaddq $1, %rax
+        update_expr:
+            iaddq $64, %rdi
+            iaddq $64, %rsi
+            iaddq $-8, %rdx
+            jge loop_8_way
+
+        remainder:
+            # -8 ~ -1 -> -4 ~ 3
+            iaddq $4, %rdx
+            # -4 ~ -1
+            jl re0_to_3
+
+        re4_to_7:
+            # 0~3 -> -2 ~ 1
+            iaddq $-2, %rdx
+            # -2 ~ -1
+            jl rem4_to_5
+
+        re6_to_7:
+            mrmovq 40(%rdi), %rbx
+            je re6
+            mrmovq 48(%rdi), %rbx
+            jmp re7
+
+        re4_to_5:
+            # -2~-1 -> -1~0
+            iaddq $1, %rdx
+            mrmovq 32(%rdi), %rbx
+            je re5
+            mrmovq 24(%rdi), %rbx
+            jmp re4
+
+        re0_to_3:
+            # -4~-1 -> -2 ~ 1
+            iaddq $2, %rdx
+            jl re0_to_1
+
+        re2_to_3:
+            # 0~1
+            mrmovq 8(%rdi), %rbx
+            je re2
+            mrmovq 16(%rdi), %rbx
+            jmp re3
+
+        re0_to_1:
+            # -2 ~ -1
+            iaddq $1, %rdx
+            mrmovq (%rdi), %rbx
+            je re1
+            ret
+
+        re7:
+            andq %rbx, %rbx
+            rmmovq %rbx, 48(%rsi)
+            mrmovq 40(%rdi), %rbx
+            jle re6
+            iaddq $1, %rax
+        re6:
+            andq %rbx, %rbx
+            rmmovq %rbx, 40(%rsi)
+            mrmovq 32(%rdi), %rbx
+            jle re5
+            iaddq $1, %rax
+        re5:
+            andq %rbx, %rbx
+            rmmovq %rbx, 32(%rsi)
+            mrmovq 24(%rdi), %rbx
+            jle re4
+            iaddq $1, %rax
+        re4:
+            andq %rbx, %rbx
+            rmmovq %rbx, 24(%rsi)
+            mrmovq 16(%rdi), %rbx
+            jle re3
+            iaddq $1, %rax
+        re3:
+            andq %rbx, %rbx
+            rmmovq %rbx, 16(%rsi)
+            mrmovq 8(%rdi), %rbx
+            jle re2
+            iaddq $1, %rax
+        re2:
+            andq %rbx, %rbx
+            rmmovq %rbx, 8(%rsi)
+            mrmovq (%rdi), %rbx
+            jle re1
+            iaddq $1, %rax
+        re1:
+            andq %rbx, %rbx
+            rmmovq %rbx, (%rsi)
+            jle Done
+            iaddq $1, %rax
+##################################################################
+# Do not modify the following section of code
+# Function epilogue.
+Done:
+    ret
+##################################################################
+# Keep the following label at the end of your function
+End:
+#/* $end ncopy-ys */
