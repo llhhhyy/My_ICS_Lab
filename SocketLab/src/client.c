@@ -10,74 +10,111 @@
  * Mulan PSL v2 for more details.
  */
 
-#include <arpa/inet.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+ #include "config.h"
+ #include "json/simple_json.h"
+ #include <arpa/inet.h>
+ #include <netinet/in.h>
+ #include <signal.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/socket.h>
+ #include <unistd.h>
 
-#include "config.h"
-#include "json/simple_json.h"
+ #define MAX_BUFFER_SIZE 1024
 
-__attribute__((unused)) static const char *json_object_name = "llama_client";
+ int client_fd = -1;
 
-void handle_sigint(int signum) {
-    (void)signum;
-    printf("\nClient interrupted by user.\n");
-    exit(0);
-}
+ /* Signal handler for SIGINT */
+ void sigint_handler(int sig) {
+     if (client_fd != -1) {
+         close(client_fd);
+     }
+     exit(0);
+ }
 
-int connect_to_server() {
-    // TODO: create socket file descriptor
-    int sockfd;
+ /* Connect to the server */
+ int connect_to_server() {
+     client_fd = socket(AF_INET, SOCK_STREAM, 0);
+     if (client_fd < 0) {
+         fprintf(stderr, "Socket creation failed\n");
+         exit(1);
+     }
 
-    // TODO: set server address with "SERVER_ADDR:SERVER_PORT"
-    struct sockaddr_in serv_addr;
+     struct sockaddr_in server_addr;
+     server_addr.sin_family = AF_INET;
+     server_addr.sin_port = htons(SERVER_PORT);
+     server_addr.sin_addr.s_addr = inet_addr(SERVER_ADDR);
 
-    // TODO: connect to the server
-    return sockfd;
-}
+     if (connect(client_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+         fprintf(stderr, "Connection failed\n");
+         close(client_fd);
+         exit(1);
+     }
 
-char *get_input() {
-    // read user input from stdin
-    char *input = NULL;
-    size_t len = 0;
-    ssize_t nread = 0;
-    do {
-        printf("> ");
-        fflush(stdout);
-        nread = getline(&input, &len, stdin);
-    } while (nread <= 1); // ignore empty input
+     fprintf(stdout, "Connected to %s:%d\n", SERVER_ADDR, SERVER_PORT);
+     return client_fd;
+ }
 
-    // ignore "\n" at the end of the input
-    input[nread - 1] = '\0';
-    return input;
-}
+ int main() {
+     /* Register SIGINT handler */
+     signal(SIGINT, sigint_handler);
 
-int main() {
-    // register SIGINT handler
-    signal(SIGINT, handle_sigint);
+     /* Connect to server */
+     int fd = connect_to_server();
 
-    // connect to the server
-    int sockfd = connect_to_server();
-    if (sockfd < 0) {
-        return -1;
-    }
+     char input[MAX_BUFFER_SIZE];
+     while (1) {
+         /* Get user input */
+         printf("> ");
+         fflush(stdout);
+         if (!fgets(input, MAX_BUFFER_SIZE, stdin)) {
+             continue;
+         }
+         input[strcspn(input, "\n")] = 0; /* Remove newline */
+         if (strlen(input) == 0) {
+             continue;
+         }
 
-    // TODO: initialize json object
+         /* Create JSON request */
+         char json_str[MAX_BUFFER_SIZE];
+         snprintf(json_str, sizeof(json_str), "{\"token\": \"%s\", \"eog\": true}", input);
 
-    // TODO: infinite loop to send user input to the server and receive response
-    while (1) {
-        // TODO: read user input from stdin (not empty)
+         /* Send JSON string without extra newline */
+         if (write(fd, json_str, strlen(json_str)) < 0) {
+             perror("Write failed");
+             close(fd);
+             exit(1);
+         }
 
-        // TODO: format the input and send it to the server
+         /* Receive and process responses */
+         char buffer[MAX_BUFFER_SIZE];
+         char response[MAX_BUFFER_SIZE] = {0};
+         int len;
+         while ((len = recv(fd, buffer, MAX_BUFFER_SIZE - 1, 0)) > 0) {
+             buffer[len] = '\0';
 
-        // TODO: receive response from the server
-        // NOTE: you need to parse the response of a specific format
-    }
+             /* Parse the response */
+             create_json_object("response");
+             parse_json("response", buffer);
+             const char *token = get_json_value_str("response", "token");
+             if (token) {
+                 strncat(response, token, MAX_BUFFER_SIZE - strlen(response) - 1);
+             } else {
+                 fprintf(stderr, "Failed to get token\n");
+             }
 
-    // close socket file descriptor and return
-    close(sockfd);
-    return 0;
-}
+             /* Get eog as boolean */
+             int eog = get_json_value_bool("response", "eog");
+             destroy_json_object("response");
+
+             if (eog) {
+                 break;
+             }
+         }
+         printf("%s\n", response);
+     }
+
+     close(fd);
+     return 0;
+ }
